@@ -1,13 +1,13 @@
 {
-  "model_name": "Qwen/Qwen2.5-3B-Instruct",
-  "layers": [14, 15, 16, 17, 18, 19],
+  "model_name": "meta-llama/Llama-3.2-3B",
+  "layers": [2, 3, 4, 5, 6],
   "clamp_norm_factor": 0.75,
   "layer_selection": "all",
   "fact_token": "subject_last",
 
   "v_num_grad_steps": 25,
-  "v_lr": 1e-1,
-  "v_loss_layer": 35,
+  "v_lr": 0.1,
+  "v_loss_layer": 27,
   "v_weight_decay": 0.5,
 
   "kl_factor": 0.0625,
@@ -25,6 +25,7 @@
   "mom2_n_samples": 100000,
   "mom2_dtype": "float32",
 
-  "nullspace_threshold": 2e-2,
-  "L2": 10
+  "nullspace_threshold": 0.02,
+  "L2": 3,
+  "apply_woodbury":true
 }

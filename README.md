@@ -55,7 +55,7 @@ results/
 #### 2. Summarize the results  
 To summarize the results, you can use [`experiments/summarize.py`](experiments/summarize.py):
 
-    python -m experiments.summarize --dir_name AlphaEdit --runs run_050
+    python -m experiments.summarize --dir_name AlphaEdit --runs run_375
 
 ## Acknowledgment
 Our code is based on  [``MEMIT``](https://github.com/kmeng01/memit.git) and [``EMMET``](https://github.com/scalable-model-editing/unified-model-editing.git).
@@ -112,19 +112,25 @@ RUN_DIR="/work/xinyu/Project/results/AlphaEdit/run_092"
 # 可选：确保从仓库根启动（能 import experiments）
 cd /work/xinyu/Project
 
-RUN_DIR="/work/xinyu/Project/results/AlphaEdit/run_085"
+RUN_DIR="/work/xinyu/Project/results/AlphaEdit/run_373"
 cd /work/xinyu/Project
 
-CUDA_VISIBLE_DEVICES=5 nohup python3 -u -m experiments.eval_run_checkpoints \
+CUDA_VISIBLE_DEVICES=0 nohup python3 -u -m experiments.eval_run_checkpoints \
   --run_dir "$RUN_DIR" \
   --ds_name mcf \
   --dataset_size_limit 2000 \
   --generation_test_interval 5 \
   --trust_remote_code \
   --skip_existing \
-  > "$RUN_DIR/eval_batch_$(date +%m%d_%H%M).log" 2>&1 & echo $! | tee "$RUN_DIR/eval_batch.pid"
+  > "$RUN_DIR/eval_batch_$(date +%m%d_%H%M%S).log" 2>&1 & echo $! | tee "$RUN_DIR/eval_batch.pid"
 
 
 python3 -u experiments/plot_forgetting.py \
   --run_dir /work/xinyu/Project/results/AlphaEdit/run_090 \
   --ds_name mcf
+
+
+STAMP="$(date +%m%d_%H%M%S)"
+OUTLOG="/work/xinyu/Project/logs/pipeline_${STAMP}.log"
+PIDF="/work/xinyu/Project/logs/pipeline.pid"
+nohup ./run_qwen2p5_pipeline.sh > "$OUTLOG" 2>&1 & echo $! | tee "$PIDF" 

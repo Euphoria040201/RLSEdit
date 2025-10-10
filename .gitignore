@@ -33,3 +33,12 @@ logs/
 *.pid
 nohup.out
 spectra/
+
+Logs_for_evoedit/
+RLSEdit/
+evoedit_results/
+
+compute.py
+plot_singulars.py
+plot_upd_norms.py
+plot_layer_singulars.py

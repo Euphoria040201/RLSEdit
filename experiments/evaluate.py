@@ -31,6 +31,8 @@ from memit.memit_seq_main import apply_memit_seq_to_model
 from memit.memit_rect_main import apply_memit_rect_to_model
 from AlphaEdit import AlphaEditHyperParams
 from AlphaEdit.AlphaEdit_main import apply_AlphaEdit_to_model, get_cov
+from EvoEdit import EvoEditHyperParams
+from EvoEdit.EvoEdit_main import apply_EvoEdit_to_model, get_cov
 from rome import ROMEHyperParams, apply_rome_to_model
 from util import nethook
 from util.globals import *
@@ -39,6 +41,7 @@ from nse.nse_main import apply_nse_to_model
 from glue_eval.glue_eval import GLUEEval
 ALG_DICT = {
     "AlphaEdit": (AlphaEditHyperParams, apply_AlphaEdit_to_model),
+    "EvoEdit": (EvoEditHyperParams, apply_EvoEdit_to_model),
     "MEMIT_seq": (MEMITHyperParams, apply_memit_seq_to_model),
     "MEMIT_prune": (MEMITHyperParams, apply_memit_to_model),
     "MEMIT_rect": (MEMITHyperParams, apply_memit_rect_to_model),
@@ -56,63 +59,6 @@ DS_DICT = {
     "mquake": (MQUAKEDataset, compute_rewrite_quality_mquake),
 }
 
-# ---------- BEGIN: robust metric extractors ----------
-import numpy as np
-
-def _first_number(x):
-    """从标量、(均值,方差)元组/列表、或嵌套字典中取第一个可用数值。"""
-    if isinstance(x, (int, float, np.floating)):
-        return float(x)
-    if isinstance(x, (list, tuple)) and len(x) > 0:
-        head = x[0]
-        if isinstance(head, (int, float, np.floating)):
-            return float(head)
-    if isinstance(x, dict):
-        # 常见 key 优先
-        for k in ["acc", "accuracy", "em", "f1", "rewrite_accuracy", "success", "mean"]:
-            if k in x:
-                val = _first_number(x[k])
-                if val is not None:
-                    return val
-        # 兜底：遍历子项
-        for v in x.values():
-            val = _first_number(v)
-            if val is not None:
-                return val
-    return None
-
-def _extract_success_general(ds_name, m):
-    """按数据集的常见结构取主要成功指标，失败则做递归兜底。"""
-    if ds_name in ["cf", "mcf"]:
-        cand = (
-            m.get("rewrite_prompts", {}).get("acc", None)
-            or m.get("rewrite", {}).get("acc", None)
-        )
-        val = _first_number(cand) if cand is not None else _first_number(m)
-        return val if val is not None else 0.0
-
-    if ds_name == "zsre":
-        cand = None
-        if "rewrite" in m:
-            cand = m["rewrite"].get("acc")
-            if cand is None:
-                cand = m["rewrite"].get("em")
-            if cand is None:
-                cand = m["rewrite"].get("f1")
-        val = _first_number(cand) if cand is not None else _first_number(m)
-        return val if val is not None else 0.0
-
-    if ds_name == "mquake":
-        cand = m.get("rewrite_accuracy")
-        if cand is None and "rewrite" in m:
-            cand = m["rewrite"].get("acc")
-        val = _first_number(cand) if cand is not None else _first_number(m)
-        return val if val is not None else 0.0
-
-    val = _first_number(m)
-    return val if val is not None else 0.0
-# ----------- END: robust metric extractors -----------
-
 def main(
     alg_name: str,
     model_name: Union[str, Tuple],
@@ -127,8 +73,9 @@ def main(
     num_edits: int = 1,
     use_cache: bool = False,
     forgetting_eval_interval: int = 0,
-    save_every: int = 0,                 # ★ 新增
-    checkpoint_subdir: str = "checkpoints" # ★ 新增
+    save_every: int = 0,                 
+    checkpoint_subdir: str = "checkpoints", 
+    downstream_eval_steps: int = 0
 ):
 
     # Set algorithm-specific variables
@@ -200,7 +147,7 @@ def main(
     # Get cache templates
     cache_template = None
     if use_cache:
-        if any(alg in alg_name for alg in ["MEMIT","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "MEMIT_rect"]):
+        if any(alg in alg_name for alg in ["MEMIT","AlphaEdit", "EvoEdit", "MEMIT_seq", "MEMIT_prune", "MEMIT_rect"]):
             cache_template = (
                 KV_DIR
                 / f"{model_name.replace('/', '_')}_MEMIT"
@@ -256,19 +203,19 @@ def main(
                         },
                     )
                     print(f"Cached k/v pair at {cache_fname}")
-    if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]):
+    if any(alg in alg_name for alg in ["EvoEdit","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]):
         # Iterate through dataset
         W_out = nethook.get_parameter(model, f"{hparams.rewrite_module_tmp.format(hparams.layers[-1])}.weight")
         if hparams.model_name == "gpt2-xl":
             cache_c = torch.zeros((len(hparams.layers), W_out.shape[0], W_out.shape[0]), device="cpu")
-            if alg_name == "AlphaEdit":
+            if alg_name == "AlphaEdit" or alg_name == "EvoEdit":
                 P = torch.zeros((len(hparams.layers), W_out.shape[0], W_out.shape[0]), device="cpu")
-        elif hparams.model_name in ["EleutherAI_gpt-j-6B","Llama3-8B","phi-1.5"]:
+        else:
             cache_c = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
-            if alg_name == "AlphaEdit":
+            if alg_name == "AlphaEdit" or alg_name == "EvoEdit":
                 P = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
         del W_out
-    if alg_name == "AlphaEdit":
+    if alg_name == "AlphaEdit" or alg_name == "EvoEdit":
         for i, layer in enumerate(hparams.layers):
             P[i,:,:] = get_project(model,tok,layer,hparams)
         torch.save(P, "null_space_project.pt")
@@ -277,7 +224,7 @@ def main(
     os.makedirs(glue_save_location, exist_ok=True)
     
     ## [ADDED] List to store records for the forgetting evaluation
-    history_of_edits = []
+    #history_of_edits = []
 
     cnt = 0
     for record_chunks in chunks(ds, num_edits):
@@ -293,12 +240,12 @@ def main(
                 break
         if already_finished:
             ## [ADDED] Also store the records in history even if skipping computation
-            history_of_edits.extend(record_chunks)
+            #history_of_edits.extend(record_chunks)
             cnt += 1
             continue
         
         ## [ADDED] Store the records for this chunk to test against later.
-        history_of_edits.extend(record_chunks)
+        #history_of_edits.extend(record_chunks)
 
         # Compute weight changes + record weights that changed
         case_ids = [record["case_id"] for record in record_chunks]
@@ -307,10 +254,10 @@ def main(
             if conserve_memory
             else dict()
         )
-        etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]) else dict()
-        seq_args = dict(cache_c=cache_c) if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE"]) else dict()
-        nc_args = dict(P = P) if any(alg in alg_name for alg in ["AlphaEdit"]) else dict()
-        if cnt == 0 and args.downstream_eval_steps > 0:#do initial GLUE EVAL WITH ORIGINAL MODEL
+        etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT", "EvoEdit", "AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]) else dict()
+        seq_args = dict(cache_c=cache_c) if any(alg in alg_name for alg in ["AlphaEdit", "EvoEdit", "MEMIT_seq", "NSE"]) else dict()
+        nc_args = dict(P = P) if any(alg in alg_name for alg in ["AlphaEdit", "EvoEdit"]) else dict()
+        if cnt == 0 and downstream_eval_steps > 0:#do initial GLUE EVAL WITH ORIGINAL MODEL
             glue_results = {'edit_num': -1}
 
             out_file = glue_save_location + "base.json"
@@ -323,7 +270,7 @@ def main(
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
         start = time()
-        if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE"]):
+        if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE", "EvoEdit"]):
             edited_model, cache_c = apply_algo(
                 model,
                 tok,
@@ -428,7 +375,6 @@ def main(
         model = edited_model
         cnt+=1
         print("Execution took", exec_time)
-        # ---- 每隔 save_every 次“样本级编辑”保存一次模型 ----
         if save_every != 0:
             total_edits = cnt * num_edits
             if save_every > 0 and total_edits % save_every == 0:
@@ -436,14 +382,12 @@ def main(
                 ckpt_dir.mkdir(parents=True, exist_ok=True)
                 print(f"[Checkpoint] Saving model at {ckpt_dir} after {total_edits} edits ...")
                 try:
-                    # 保存模型与分词器；自动使用 safetensors（如已安装）
                     model.save_pretrained(
                         ckpt_dir,
                         safe_serialization=True,
                         max_shard_size="5GB"
                     )
                     tok.save_pretrained(ckpt_dir)
-                    # 记录一点元信息
                     with open(ckpt_dir / "meta.json", "w") as f:
                         json.dump({
                             "total_edits": int(total_edits),
@@ -518,10 +462,10 @@ def main(
                 print(f"Forgetting report saved to {report_path}")
             print("---------------------------------------------------------")
         ## --- END OF ADDED BLOCK ---
-
+        '''
 
         # Evaluate new model
-        if args.downstream_eval_steps > 0 and cnt % args.downstream_eval_steps == 0:
+        if downstream_eval_steps > 0 and cnt % args.downstream_eval_steps == 0:
             glue_results = {
                             'edit_num': cnt*num_edits,
                             'case_id': case_ids
@@ -536,7 +480,7 @@ def main(
             output_filename = out_file.replace('.json', '_glue.json')
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
-
+    '''
     start = time()
     gen_test_vars = [snips, vec]
     for record in ds:
@@ -582,6 +526,12 @@ def get_project(model, tok, layer, hparams):
     ).cpu()
     U, S, _ = torch.linalg.svd(cov, full_matrices=False)
     threshold = hparams.nullspace_threshold
+    with torch.no_grad():
+        s = S.detach().cpu().numpy()
+        cnt = int((s < threshold).sum())
+        print(f"[nullspace] layer={layer} dim={s.size}, "
+            f"min={s.min():.3e}, median={np.median(s):.3e}, max={s.max():.3e}, "
+            f"count(<{threshold:g})={cnt}/{s.size}")
     small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
     print(len(small_singular_indices))
     return U[:, small_singular_indices] @ U[:, small_singular_indices].T
@@ -610,7 +560,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--alg_name",
-        choices=["AlphaEdit","MEMIT_rect", "MEMIT_seq","MEMIT_prune", "MEMIT", "ROME", "FT", "MEND","NSE"],
+        choices=["AlphaEdit", "EvoEdit", "MEMIT_rect", "MEMIT_seq","MEMIT_prune", "MEMIT", "ROME", "FT", "MEND","NSE"],
         default="ROME",
         help="Editing algorithm to use. Results are saved in results/<alg_name>/<run_id>, "
         "where a new run_id is generated on each run. "
@@ -694,10 +644,10 @@ if __name__ == "__main__":
         help="Interval (in number of edits) to test accuracy on all previous edits. If 0, this test is disabled. E.g., 100.",
     )
     parser.add_argument(
-    "--save_every",
-    type=int,
-    default=100,
-    help="Save the whole model every N edits (sample-level). 0 = disable."
+        "--save_every",
+        type=int,
+        default=2000,
+        help="Save the whole model every N edits (sample-level). 0 = disable."
     )
     parser.add_argument(
         "--checkpoint_subdir",
@@ -705,7 +655,6 @@ if __name__ == "__main__":
         default="checkpoints",
         help="Subdirectory under the run dir to store checkpoints."
     )
-
     parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
     args = parser.parse_args()
 
@@ -725,4 +674,5 @@ if __name__ == "__main__":
         forgetting_eval_interval=args.forgetting_eval_interval, ## [MODIFIED] Pass new argument to main
         save_every=args.save_every,
         checkpoint_subdir=args.checkpoint_subdir,
+        downstream_eval_steps=args.downstream_eval_steps,
     )

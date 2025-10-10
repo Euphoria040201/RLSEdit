@@ -1,6 +1,6 @@
 {
   "model_name": "Qwen/Qwen2.5-7B-Instruct",
-  "layers": [14, 15, 16, 17, 18],
+  "layers": [7, 8, 9, 10, 11],
   "clamp_norm_factor": 0.75,
   "layer_selection": "all",
   "fact_token": "subject_last",
@@ -26,5 +26,6 @@
   "mom2_dtype": "float32",
 
   "nullspace_threshold": 2e-2,
-  "L2": 10
+  "L2": 1,
+  "apply_woodbury":true
 }

@@ -5,8 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import csv
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import time
 
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from scipy.linalg import svd, qr
 from rome.layer_stats import layer_stats
 from util import nethook
 from util.generate import generate_fast
@@ -14,24 +16,61 @@ from util.globals import *
 
 from .compute_ks import compute_ks
 from .compute_z import compute_z, get_module_input_output_at_words, find_fact_lookup_idx
-from .AlphaEdit_hparams import AlphaEditHyperParams
+from .EvoEdit_hparams import EvoEditHyperParams
+
 # Cache variable(s)
 CONTEXT_TEMPLATES_CACHE = None
 COV_CACHE = {}
 
-def apply_AlphaEdit_to_model(
+update_timing = {
+    "per_layer": [],    
+    "total_solve_s": 0.0,
+    "total_proj_s": 0.0,     
+    "total_all_s": 0.0        
+}
+def pk_norm_small(P_i, K_t, eps=1e-4):
+    with torch.no_grad():
+        val = torch.linalg.norm(P_i @ K_t, ord='fro')
+        #print("P_i @ K_t = ", val)
+    return bool(val.item() < eps)
+
+def update_projector_from_P_and_K(P0: torch.Tensor, Knew: torch.Tensor, tol: float = 1e-10):
+    device, dtype = P0.device, P0.dtype
+    R = P0 @ Knew.to(device=device, dtype=dtype)
+
+    if R.numel() == 0 or R.shape[1] == 0:
+        return P0, torch.zeros((P0.size(0), 0), device=device, dtype=dtype)
+
+    U, S, Vh = torch.linalg.svd(R, full_matrices=False)
+    eps  = torch.finfo(S.dtype).eps
+    thr  = max(R.shape) * eps * (S[0] if S.numel() else torch.tensor(0., device=device, dtype=dtype))
+    r    = int((S > torch.maximum(thr, torch.tensor(tol, device=device, dtype=dtype))).sum().item())
+
+    if r == 0:
+        return P0, torch.zeros((P0.size(0), 0), device=device, dtype=dtype)
+
+    Q_add = U[:, :r]
+    P_new = P0 - Q_add @ Q_add.transpose(-2, -1)
+    return P_new, Q_add
+
+def apply_EvoEdit_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
     requests: List[Dict],
-    hparams: AlphaEditHyperParams,
+    hparams: EvoEditHyperParams,
     cache_template: Optional[str] = None,
     cache_c = None,
     P = None,
+    apply_woodbury = True,
+    z_error_threshold = 1e-2,
 ) -> Dict[str, Tuple[torch.Tensor]]:
     """
     Executes the MEMIT update algorithm for the specified update at the specified layer
     Invariant: model at beginning of function == model at end of function
     """
+    print("Using EvoEdit.")
+    global update_timing
+    t_all0 = time.perf_counter()
 
     # Update target and print info
     requests = deepcopy(requests)
@@ -103,14 +142,13 @@ def apply_AlphaEdit_to_model(
                 )
                 print(f"Cached k/v pair at {cache_fname}")
     zs = torch.stack(z_list, dim=1)
-
+    skipped_this_request = False
+    total_s_all_layers = 0
     for i, layer in enumerate(hparams.layers):
         print(f"\n\nLAYER {layer}\n")
 
-        # Get current model activations
         layer_ks = compute_ks(model, tok, requests, hparams, layer, context_templates).T
         print(f"Writing {layer_ks.size(1)} key/value pair(s) into layer {layer}")
-
         # Compute residual error
         cur_zs = get_module_input_output_at_words(
             model,
@@ -122,34 +160,105 @@ def apply_AlphaEdit_to_model(
             fact_token_strategy=hparams.fact_token,
         )[1].T
         targets = zs - cur_zs
-        print("z error", torch.linalg.norm(targets, dim=0).mean())
-
+        z_error = torch.linalg.norm(targets, dim=0).mean()
+        print("z error", z_error)
+        
+        
         repeat_factor = (layer_ks.size(1) // targets.size(1))
         targets = targets.repeat_interleave(repeat_factor, dim=1)
-        resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
-        upd_matrix = torch.linalg.solve(
-                P[i,:,:].cuda() @ (layer_ks @ layer_ks.T + cache_c[i,:,:].cuda()) + hparams.L2*torch.eye(layer_ks.shape[0], dtype=torch.float,device="cuda"), P[i,:,:].cuda() @ layer_ks @ resid.T
-        )
-        # Adjust update matrix shape
+        
+        
+        resid = targets / (len(hparams.layers) - i)  # d×r
+        if apply_woodbury:
+            if z_error < z_error_threshold:
+                print("Skip due to small z_error")
+                skipped_this_request=True
+                break
+            print("Applying Woodbury Method")
+            # ----- Low-rank (Woodbury) with L2 -----
+            K_t = layer_ks.to("cuda")
+            P_i = P[i, :, :].to("cuda")
+            if pk_norm_small(P_i, K_t, eps=1e-3):
+                print(f"[Skip] ||P K||_F is tiny at layer {layer}, skip edit for this request")
+                skipped_this_request=True
+                break
+            t_solve0 = time.perf_counter()
+
+            Y   = P_i @ K_t                      # d×r
+            S0  = K_t.T @ Y                      # r×r = K^T P K
+            r   = S0.size(0)
+            Ir  = torch.eye(r, device=S0.device, dtype=S0.dtype)
+            eps = 1e-6 if S0.dtype == torch.float32 else 1e-12
+            try:
+                # Cholesky on (lam I + S0)
+                L = torch.linalg.cholesky(S0 + hparams.L2 * Ir + eps * Ir)   # lower, r×r
+
+                # Solve (lam I + S0) B = Y^T  ->  B = (lam I + S0)^{-1} Y^T
+                YT = Y.T                                              # r×d
+                B  = torch.cholesky_solve(YT, L)                      # r×d
+
+                # Δ = resid @ B
+                upd_matrix = resid @ B
+            except RuntimeError as e:
+                print(e) 
+                skipped_this_request=True
+                print("Failed for cholesky. Skip this edit.")
+                break
+        else:
+            d = layer_ks.shape[0]
+            Id = torch.eye(d, device="cuda", dtype=layer_ks.dtype)
+            upd_matrix = torch.linalg.solve(
+                P[i,:,:].cuda() @ (layer_ks @ layer_ks.T) + hparams.L2 * Id,
+                P[i,:,:].cuda() @ layer_ks @ resid.T,
+            )
+            
+
+        solve_s = time.perf_counter() - t_solve0
+        update_timing["total_solve_s"] += solve_s
+        t_proj0 = time.perf_counter()
+        #update projector
+        P[i,:,:], _ = update_projector_from_P_and_K(P[i,:,:], layer_ks.detach())
+
+        proj_s = time.perf_counter() - t_proj0
+        update_timing["total_proj_s"] += proj_s
+
         weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
         upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
+
         print("orig norm", torch.linalg.norm(weights[weight_name]))
         print("upd norm", torch.linalg.norm(upd_matrix))
         with torch.no_grad():
             weights[weight_name][...] = weights[weight_name] + upd_matrix
+
         # Clear GPU memory
-        #del U,S,cov
         for x in [layer_ks, cur_zs, targets, upd_matrix]:
             x.cpu()
             del x
         torch.cuda.empty_cache()
-    for i, layer in enumerate(hparams.layers):
-        layer_ks = compute_ks(model, tok, requests, hparams, layer, context_templates).T
-        cache_c[i,:,:] += layer_ks.cpu() @ layer_ks.cpu().T
+
+        layer_total_s = proj_s + solve_s
+        total_s_all_layers += layer_total_s
+        update_timing["per_layer"].append({
+            "layer": int(layer),
+            "solve_s": solve_s,
+            "proj_update_s": proj_s,
+            "layer_total_s": layer_total_s
+        })
+        print(f"[Timing] layer {layer}: solve={solve_s:.4f}s, proj_update={proj_s:.4f}s, total={layer_total_s:.4f}s")
+
+
+    if not skipped_this_request:
+        for i, layer in enumerate(hparams.layers):
+            layer_ks = compute_ks(model, tok, requests, hparams, layer, context_templates).T
+            cache_c[i,:,:] += layer_ks.cpu() @ layer_ks.cpu().T
+
+    update_timing["total_all_s"] += total_s_all_layers
+    print(f"[Timing][Totals] solve={update_timing['total_solve_s']:.4f}s, "
+          f"proj_update={update_timing['total_proj_s']:.4f}s, "
+          f"all={update_timing['total_all_s']:.4f}s")
 
     print(f"Deltas successfully computed for {list(weights.keys())}")
     return model, cache_c
-
 
 def get_cov(
     model: AutoModelForCausalLM,

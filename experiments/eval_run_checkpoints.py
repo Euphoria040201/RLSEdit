@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
-
+from glue_eval.glue_eval import GLUEEval
 def _extract_edits_num(p: Path) -> Optional[int]:
     m = re.search(r"edits_(\d+)", p.name)
     if not m:

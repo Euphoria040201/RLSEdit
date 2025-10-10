@@ -24,13 +24,18 @@ def summarize(
     #for run_dir in [Path(abs_path)]:
 
         # Skip if we're not interested
-        if runs is not None and all(run not in str(run_dir) for run in runs):
+        if runs is not None and all(
+            (r not in str(run_dir)) and (r.split("/")[0] not in str(run_dir))
+            for r in runs
+        ):
             continue
-
+        eval_dir = run_dir / "eval" / "edits_002000" / "mcf"
+        if not eval_dir.is_dir():
+            continue
         # Iterate through all case files
         cur_sum = collections.defaultdict(lambda: [])
-        files = list(run_dir.glob("*case_*.json"))
-        files.sort(key=lambda x: int(str(x).split("_")[-1].split(".")[0]))
+        files = list(eval_dir.rglob("case_*.json"))
+        files.sort(key=lambda x: int(x.stem.split("_")[-1]))
         file_wise_results = {}
         for case_file in files:
             try:
@@ -118,7 +123,7 @@ def summarize(
 
         num_items = len(cur_sum[next(iter(cur_sum.keys()))])
         metadata = {
-            "run_dir": str(run_dir),
+            "run_dir": str(eval_dir),
             "num_cases": num_items,
         }
 
