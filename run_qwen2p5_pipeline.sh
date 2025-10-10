@@ -1,28 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-############################
-# 0) 基本配置（按需改）
-############################
-NUM_EDITS=1
 LAM=1
 ROOT="/work/xinyu/Project"
 LOG_DIR="$ROOT/logs"
 dataset="mcf"
-# 模型与超参（请确保这个 hparams 文件存在于你的 HPARAMS_DIR/ROME 中）
 MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct"
 HPARAMS_FNAME="Llama3-8B.json"
 ALG_NAME="EvoEdit"
 MODEL_NAME="Llama3-8B"
-# checkpoints 子目录与 GPU
 CKPT_SUBDIR="checkpoints_${MODEL_NAME}_evo_${dataset}_${ALG_NAME}_lambda=${LAM}_ne${NUM_EDITS}"
 GPU_ID=1
-# eval_run_checkpoints / 后处理用的 run 目录
-RUN_DIR="/work/xinyu/Project/results/${ALG_NAME}/run_386"
+RUN_DIR="results/${ALG_NAME}/run_000"
 
-############################
-# 1) 预备：建目录 & 切到 ROOT
-############################
 install -d "$LOG_DIR"
 cd "$ROOT"
 
