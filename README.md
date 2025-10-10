@@ -17,21 +17,14 @@
 - nltk==3.9.1
 
 ## Quick Start
-
+LOG_DIR="$PWD/logs"
+install -d "$LOG_DIR"
 STAMP="$(date +%m%d_%H%M%S)"
-OUTLOG="/logs/pipeline_${STAMP}.log"
-PIDF="/logs/pipeline.pid"
+OUTLOG="logs/pipeline_${STAMP}.log"
+PIDF="logs/pipeline.pid"
 nohup ./run_qwen2p5_pipeline.sh > "$OUTLOG" 2>&1 & echo $! | tee "$PIDF" 
 
-This command runs an evaluation script for the AlphaEdit algorithm using the Llama3-8b-instruct. Below are the explanations for each argument:
-
-- `--alg_name=AlphaEdit`: Specifies the name of the algorithm being used, which is AlphaEdit in this case.
-- `--model_name=meta-llama/Meta-Llama-3-8B-Instruct`: Indicates the name of the model being evaluated, here it is Llama-3-8B-Instruct.
-- `--hparams_fname=Llama3-8B.json`: Points to the JSON file containing hyperparameters specific to the Llama-3-8B-Instruct model.
-- `--ds_name=mcf`: Specifies the dataset name, in this case, "mcf".
-- `--dataset_size_limit=2000`: Sets the total number of editing samples to 2000.
-- `--num_edits=100`: Defines the batch size for each round of editing, meaning 100 edits will be performed in each batch. 
-- `--downstream_eval_steps=5`: indicates that a test of general capabilities is conducted after every 5 rounds of editing.
+This command runs a bash script, which include editing the model, evaluate the model, and plot/summarize the results. 
 
 Results from each run are stored at `results/<method_name>/run_<run_id>` in a specific format:
 ```bash
@@ -48,7 +41,7 @@ results/
 #### 2. Summarize the results  
 To summarize the results, you can use [`experiments/summarize.py`](experiments/summarize.py):
 
-    python -m experiments.summarize --dir_name AlphaEdit --runs run_375
+    python -m experiments.summarize --dir_name EvoEdit --runs run_000
 
 ## Acknowledgment
 Our code is based on  [``AlphaEdit``](https://github.com/jianghoucheng/AlphaEdit).

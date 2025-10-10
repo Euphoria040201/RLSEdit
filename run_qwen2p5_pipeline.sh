@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-LAM=1
+NUM_EDITS=1
 ROOT="/work/xinyu/Project"
 LOG_DIR="$ROOT/logs"
 dataset="mcf"
@@ -8,7 +8,7 @@ MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct"
 HPARAMS_FNAME="Llama3-8B.json"
 ALG_NAME="EvoEdit"
 MODEL_NAME="Llama3-8B"
-CKPT_SUBDIR="checkpoints_${MODEL_NAME}_evo_${dataset}_${ALG_NAME}_lambda=${LAM}_ne${NUM_EDITS}"
+CKPT_SUBDIR="checkpoints_${MODEL_NAME}_evo_${dataset}_${ALG_NAME}_ne${NUM_EDITS}"
 GPU_ID=1
 RUN_DIR="results/${ALG_NAME}/run_000"
 
@@ -16,7 +16,7 @@ install -d "$LOG_DIR"
 cd "$ROOT"
 
 STAMP="$(date +%m%d_%H%M%S)"
-LOG="${LOG_DIR}/${MODEL_NAME}_evo_ne${NUM_EDITS}_${ALG_NAME}_${dataset}_lambda=${LAM}_${STAMP}.log"
+LOG="${LOG_DIR}/${MODEL_NAME}_evo_ne${NUM_EDITS}_${ALG_NAME}_${dataset}_${STAMP}.log"
 PIDF="${LOG}.pid"
 
 echo "==[Stage 1 / evaluate]=================================================="
