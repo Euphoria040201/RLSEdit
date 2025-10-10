@@ -17,10 +17,11 @@
 - nltk==3.9.1
 
 ## Quick Start
-### An example for editing Llama3 (8B) on counterfact dataset using AlphaEdit
-#### 1. Edit Llama3 (8B) model 
- 
-    CUDA_VISIBLE_DEVICES=7 nohup python3 -u -m experiments.evaluate   --alg_name AlphaEdit   --model_name meta-llama/Meta-Llama-3-8B-Instruct   --hparams_fname Llama3-8B.json   --ds_name mcf --dataset_size_limit 2000   --num_edits 1 --downstream_eval_steps 5 --forgetting_eval_interval 100   > /work/xinyu/Project/logs/llama3_8B_alphaedit_100edits_0908_woodbury.log 2>&1 &
+
+STAMP="$(date +%m%d_%H%M%S)"
+OUTLOG="/logs/pipeline_${STAMP}.log"
+PIDF="/logs/pipeline.pid"
+nohup ./run_qwen2p5_pipeline.sh > "$OUTLOG" 2>&1 & echo $! | tee "$PIDF" 
 
 This command runs an evaluation script for the AlphaEdit algorithm using the Llama3-8b-instruct. Below are the explanations for each argument:
 
@@ -50,79 +51,5 @@ To summarize the results, you can use [`experiments/summarize.py`](experiments/s
     python -m experiments.summarize --dir_name AlphaEdit --runs run_375
 
 ## Acknowledgment
-Our code is based on  [``MEMIT``](https://github.com/kmeng01/memit.git) and [``EMMET``](https://github.com/scalable-model-editing/unified-model-editing.git).
+Our code is based on  [``AlphaEdit``](https://github.com/jianghoucheng/AlphaEdit).
 
-
-# ==== 基本配置 ====
-NUM_EDITS=10
-ROOT="/work/xinyu/Project"
-LOG_DIR="$ROOT/logs"
-CKPT_SUBDIR="checkpoints_gpt2xl_ne${NUM_EDITS}"
-
-# 确保目录存在 & 进入工程根目录（相对路径的 results 会落在 /work 盘）
-install -d "$LOG_DIR"
-cd "$ROOT"
-
-# 日志 & PID（带 num_edits 前缀）
-LOG="${LOG_DIR}/gpt2xl_ne${NUM_EDITS}_alphaedit_run_$(date +%m%d_%H%M).log"
-PIDF="${LOG}.pid"
-
-# ==== 启动 ====
-CUDA_VISIBLE_DEVICES=6 nohup python3 -u -m experiments.evaluate \
-  --alg_name AlphaEdit \
-  --model_name gpt2-xl \
-  --hparams_fname gpt2-xl.json \
-  --ds_name mcf \
-  --dataset_size_limit 2000 \
-  --num_edits "$NUM_EDITS" \
-  --downstream_eval_steps 0 \
-  --save_every 100 \
-  --checkpoint_subdir "$CKPT_SUBDIR" \
-  > "$LOG" 2>&1 & echo $! | tee "$PIDF"
-
-
-CUDA_VISIBLE_DEVICES=5 nohup python3 -u -m experiments.evaluate \
-  --alg_name AlphaEdit \
-  --model_name EleutherAI/gpt-j-6b \
-  --hparams_fname EleutherAI_gpt-j-6B.json \
-  --ds_name mcf --dataset_size_limit 2000 \
-  --num_edits 10 --downstream_eval_steps 5 --forgetting_eval_interval 100 \
-  > /home/xinyu/work/xinyu/Project/logs/gptj_ours25edits_0909_woodbury.log 2>&1 &
-
-
-CUDA_VISIBLE_DEVICES=4 nohup python3 -u -m experiments.evaluate \
-  --alg_name AlphaEdit \
-  --model_name gpt2-xl \
-  --hparams_fname gpt2-xl.json \
-  --ds_name mcf --dataset_size_limit 2000 \
-  --num_edits 10 --downstream_eval_steps 5 --forgetting_eval_interval 100 \ &
-
-
-# Evaluating Edited Models
-RUN_DIR="/work/xinyu/Project/results/AlphaEdit/run_092"
-
-# 可选：确保从仓库根启动（能 import experiments）
-cd /work/xinyu/Project
-
-RUN_DIR="/work/xinyu/Project/results/AlphaEdit/run_373"
-cd /work/xinyu/Project
-
-CUDA_VISIBLE_DEVICES=0 nohup python3 -u -m experiments.eval_run_checkpoints \
-  --run_dir "$RUN_DIR" \
-  --ds_name mcf \
-  --dataset_size_limit 2000 \
-  --generation_test_interval 5 \
-  --trust_remote_code \
-  --skip_existing \
-  > "$RUN_DIR/eval_batch_$(date +%m%d_%H%M%S).log" 2>&1 & echo $! | tee "$RUN_DIR/eval_batch.pid"
-
-
-python3 -u experiments/plot_forgetting.py \
-  --run_dir /work/xinyu/Project/results/AlphaEdit/run_090 \
-  --ds_name mcf
-
-
-STAMP="$(date +%m%d_%H%M%S)"
-OUTLOG="/work/xinyu/Project/logs/pipeline_${STAMP}.log"
-PIDF="/work/xinyu/Project/logs/pipeline.pid"
-nohup ./run_qwen2p5_pipeline.sh > "$OUTLOG" 2>&1 & echo $! | tee "$PIDF" 
