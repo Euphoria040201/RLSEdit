@@ -15,7 +15,6 @@ def _safe_mean(x):
 
 
 def _extract_edits_from_path(p: Path) -> int | None:
-    """优先从目录名 edits_XXXXXX 抽取；否则从文件名 forgetting_report_at_XXX_edits.json；再否则读 JSON."""
     m = re.search(r"edits_(\d+)", p.as_posix())
     if m:
         try:
@@ -38,30 +37,23 @@ def _extract_edits_from_path(p: Path) -> int | None:
 
 
 def _find_forgetting_reports(run_dir: Path, ds_name: str | None):
-    """
-    返回 {E: Path}，按 edits 数去重。
-    搜索顺序（优先级从高到低）：
-      1) run_dir/eval/edits_*/<ds>/forgetting_report.json
-      2) run_dir/forgetting_report_at_*_edits.json（老格式）
-      3) run_dir/**/forgetting_report*.json（兜底）
-    """
+
     candidates: list[Path] = []
 
-    # v1: 新评测结构
+
     if ds_name:
         candidates += list(run_dir.glob(f"eval/edits_*/{ds_name}/forgetting_report.json"))
     else:
         candidates += list(run_dir.glob(f"eval/edits_*/**/forgetting_report.json"))
 
-    # v2: 老报告直接在 run_dir 根下
+  
     candidates += list(run_dir.glob("forgetting_report_at_*_edits.json"))
 
-    # v3: 兜底递归
     for p in run_dir.rglob("forgetting_report*.json"):
         if p not in candidates:
             candidates.append(p)
 
-    # 解析 edits 并去重：若同一 E 多份，优先 eval/ 路径下的
+
     by_E: dict[int, Path] = {}
     priority_score = lambda path: 0 if "/eval/" in path.as_posix() else 1
 
@@ -80,10 +72,9 @@ def _find_forgetting_reports(run_dir: Path, ds_name: str | None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run_dir", required=True, help="例如 /work/.../results/AlphaEdit/run_092")
-    ap.add_argument("--ds_name", default="mcf", help="用于定位 run_dir/eval/edits_*/<ds>/forgetting_report.json；为空则不加此层过滤")
-    ap.add_argument("--out_subdir", default=None,
-                    help="输出子目录名（默认：eval/plots/<ds_name> 或 eval/plots）")
+    ap.add_argument("--run_dir", required=True)
+    ap.add_argument("--ds_name", default="mcf")
+    ap.add_argument("--out_subdir")
     ap.add_argument("--ylim", type=float, nargs=2, default=(0.0, 1.0), help="y 轴范围，默认 0~1")
     args = ap.parse_args()
 
@@ -110,19 +101,15 @@ def main():
             p[cid] = float(item.get("paraphrase_acc", np.nan))
             n[cid] = float(item.get("neighborhood_acc", np.nan))
         R[E], P[E], N[E] = r, p, n
-        sizes_by_E[E] = len(r)  # 一般三者长度相同
-
-    # 生成累积集合（每个检查点“已出现的 case 集”）
+        sizes_by_E[E] = len(r)  
     cum_sets = OrderedDict((E, set(R[E].keys())) for E in checkpoints)
 
-    # 定义分组：group(E_k) = S(E_k) - S(E_{k-1})
     groups = OrderedDict()
     prev = set()
     for E in checkpoints:
         groups[E] = sorted(list(cum_sets[E] - prev))
         prev = cum_sets[E]
 
-    # 输出目录
     if args.out_subdir:
         out_dir = run_dir / args.out_subdir
     else:
@@ -130,7 +117,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[plot] outputs -> {out_dir}")
 
-    # —— 概览：以每个 checkpoint 的全量样本为集合，画 rewrite/para/neigh 的均值曲线
+
     xs, y_r, y_p, y_n = [], [], [], []
     ns = []
     for E in checkpoints:
@@ -157,7 +144,6 @@ def main():
     plt.savefig(out_dir / "overview.png")
     plt.close()
 
-    # 导出概览 CSV
     pd.DataFrame({
         "checkpoint_total_edits": xs,
         "avg_rewrite": y_r,
@@ -166,7 +152,6 @@ def main():
         "num_cases": ns,
     }).to_csv(out_dir / "overview.csv", index=False)
 
-    # —— 分组画图 + CSV
     all_group_frames = []
     for E_def, group_cases in groups.items():
         if not group_cases:
@@ -177,7 +162,7 @@ def main():
         for E in checkpoints:
             if E < E_def:
                 continue
-            # 固定“该组”的 case_id 集合，查看其在更大 E 时的表现
+
             rw = [R[E][c] for c in group_cases if c in R[E]]
             pp = [P[E][c] for c in group_cases if c in P[E]]
             nn_ = [N[E][c] for c in group_cases if c in N[E]]
