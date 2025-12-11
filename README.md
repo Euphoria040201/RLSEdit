@@ -12,11 +12,16 @@
 - datasets==2.21.0
 - matplotlib==3.10.3
 - spacy==3.4.1
-- scipy==1.15.2
+- scipy==1.15.2 
 - scikit-learn==1.6.1
 - nltk==3.9.1
 
 ## Quick Start
+source /work/xinyu/envs/ml261/bin/activate
+# 提示符出现 (ml261) 即成功
+conda deactivate
+conda activate /work/xinyu/envs/ml261/
+cd /work/xinyu/Project
 LOG_DIR="$PWD/logs"
 install -d "$LOG_DIR"
 STAMP="$(date +%m%d_%H%M%S)"
@@ -41,8 +46,9 @@ results/
 #### 2. Summarize the results  
 To summarize the results, you can use [`experiments/summarize.py`](experiments/summarize.py):
 
-    python -m experiments.summarize --dir_name EvoEdit --runs run_000
+    python -m experiments.summarize --dir_name AlphaEdit --runs 069
 
 ## Acknowledgment
 Our code is based on  [``AlphaEdit``](https://github.com/jianghoucheng/AlphaEdit).
 
+nohup python compute.py --gpu 7 --mem-frac 0.85 --compute &

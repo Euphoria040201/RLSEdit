@@ -21,20 +21,26 @@ from .EvoEdit_hparams import EvoEditHyperParams
 # Cache variable(s)
 CONTEXT_TEMPLATES_CACHE = None
 COV_CACHE = {}
+K_CACHE: Dict[int, torch.Tensor] = {}   # 每层所有 previous keys: d_in x n_prev
 
 update_timing = {
-    "per_layer": [],    
+    "per_layer": [],
     "total_solve_s": 0.0,
-    "total_proj_s": 0.0,     
-    "total_all_s": 0.0        
+    "total_proj_s": 0.0,
+    "total_z_error_s": 0.0,
+    "total_all_s": 0.0,
 }
+
+
 def pk_norm_small(P_i, K_t, eps=1e-4):
     with torch.no_grad():
-        val = torch.linalg.norm(P_i @ K_t, ord='fro')
-        #print("P_i @ K_t = ", val)
+        val = torch.linalg.norm(P_i @ K_t, ord="fro")
     return bool(val.item() < eps)
 
-def update_projector_from_P_and_K(P0: torch.Tensor, Knew: torch.Tensor, tol: float = 1e-10):
+
+def update_projector_from_P_and_K(
+    P0: torch.Tensor, Knew: torch.Tensor, tol: float = 1e-10
+):
     device, dtype = P0.device, P0.dtype
     R = P0 @ Knew.to(device=device, dtype=dtype)
 
@@ -42,9 +48,15 @@ def update_projector_from_P_and_K(P0: torch.Tensor, Knew: torch.Tensor, tol: flo
         return P0, torch.zeros((P0.size(0), 0), device=device, dtype=dtype)
 
     U, S, Vh = torch.linalg.svd(R, full_matrices=False)
-    eps  = torch.finfo(S.dtype).eps
-    thr  = max(R.shape) * eps * (S[0] if S.numel() else torch.tensor(0., device=device, dtype=dtype))
-    r    = int((S > torch.maximum(thr, torch.tensor(tol, device=device, dtype=dtype))).sum().item())
+    eps = torch.finfo(S.dtype).eps
+    thr = max(R.shape) * eps * (
+        S[0] if S.numel() else torch.tensor(0.0, device=device, dtype=dtype)
+    )
+    r = int(
+        (S > torch.maximum(thr, torch.tensor(tol, device=device, dtype=dtype)))
+        .sum()
+        .item()
+    )
 
     if r == 0:
         return P0, torch.zeros((P0.size(0), 0), device=device, dtype=dtype)
@@ -52,6 +64,7 @@ def update_projector_from_P_and_K(P0: torch.Tensor, Knew: torch.Tensor, tol: flo
     Q_add = U[:, :r]
     P_new = P0 - Q_add @ Q_add.transpose(-2, -1)
     return P_new, Q_add
+
 
 def apply_EvoEdit_to_model(
     model: AutoModelForCausalLM,
@@ -61,16 +74,30 @@ def apply_EvoEdit_to_model(
     cache_template: Optional[str] = None,
     cache_c = None,
     P = None,
-    apply_woodbury = True,
-    z_error_threshold = 1e-2,
+    apply_woodbury: bool = True,
+    z_error_threshold: float = 1e-2,
 ) -> Dict[str, Tuple[torch.Tensor]]:
     """
     Executes the MEMIT update algorithm for the specified update at the specified layer
     Invariant: model at beginning of function == model at end of function
     """
     print("Using EvoEdit.")
-    global update_timing
+    global update_timing, K_CACHE
+
     t_all0 = time.perf_counter()
+    memory_device = next(model.parameters()).device
+    log_gpu_memory = memory_device.type == "cuda"
+    if log_gpu_memory:
+        torch.cuda.reset_peak_memory_stats(memory_device)
+
+    # Reset timing
+    update_timing = {
+        "per_layer": [],
+        "total_solve_s": 0.0,
+        "total_proj_s": 0.0,
+        "total_z_error_s": 0.0,
+        "total_all_s": 0.0,
+    }
 
     # Update target and print info
     requests = deepcopy(requests)
@@ -91,6 +118,7 @@ def apply_EvoEdit_to_model(
         )
         for layer in hparams.layers
     }
+
     # Compute z for final layer
     context_templates = get_context_templates(model, tok)
     z_layer = hparams.layers[-1]
@@ -142,14 +170,22 @@ def apply_EvoEdit_to_model(
                 )
                 print(f"Cached k/v pair at {cache_fname}")
     zs = torch.stack(z_list, dim=1)
+
+    layer_stat = []
     skipped_this_request = False
-    total_s_all_layers = 0
+    total_s_all_layers = 0.0
+
     for i, layer in enumerate(hparams.layers):
         print(f"\n\nLAYER {layer}\n")
 
-        layer_ks = compute_ks(model, tok, requests, hparams, layer, context_templates).T
+        # Current batch keys
+        layer_ks = compute_ks(
+            model, tok, requests, hparams, layer, context_templates
+        ).T
         print(f"Writing {layer_ks.size(1)} key/value pair(s) into layer {layer}")
+
         # Compute residual error
+        t_z_error0 = time.perf_counter()
         cur_zs = get_module_input_output_at_words(
             model,
             tok,
@@ -161,70 +197,67 @@ def apply_EvoEdit_to_model(
         )[1].T
         targets = zs - cur_zs
         z_error = torch.linalg.norm(targets, dim=0).mean()
+        z_error_s = time.perf_counter() - t_z_error0
+        update_timing["total_z_error_s"] += z_error_s
         print("z error", z_error)
-        
-        
-        repeat_factor = (layer_ks.size(1) // targets.size(1))
+
+        repeat_factor = layer_ks.size(1) // targets.size(1)
         targets = targets.repeat_interleave(repeat_factor, dim=1)
-        
-        
-        resid = targets / (len(hparams.layers) - i)  # d×r
+
+        resid = targets / (len(hparams.layers) - i)  # d × r
+
+        t_solve0 = time.perf_counter()
         if apply_woodbury:
             if z_error < z_error_threshold:
                 print("Skip due to small z_error")
-                skipped_this_request=True
+                skipped_this_request = True
                 break
             print("Applying Woodbury Method")
-            # ----- Low-rank (Woodbury) with L2 -----
             K_t = layer_ks.to("cuda")
-            P_i = P[i, :, :].to("cuda")
-            if pk_norm_small(P_i, K_t, eps=1e-3):
-                print(f"[Skip] ||P K||_F is tiny at layer {layer}, skip edit for this request")
-                skipped_this_request=True
+            P_i_solve = P[i, :, :].to("cuda")
+            if pk_norm_small(P_i_solve, K_t, eps=1e-3):
+                print(
+                    f"[Skip] ||P K||_F is tiny at layer {layer}, skip edit for this request"
+                )
+                skipped_this_request = True
                 break
-            t_solve0 = time.perf_counter()
 
-            Y   = P_i @ K_t                      # d×r
-            S0  = K_t.T @ Y                      # r×r = K^T P K
-            r   = S0.size(0)
-            Ir  = torch.eye(r, device=S0.device, dtype=S0.dtype)
+            # Low-rank (Woodbury) with L2
+            Y = P_i_solve @ K_t                 # d × r
+            S0 = K_t.T @ Y                      # r × r = K^T P K
+            r = S0.size(0)
+            Ir = torch.eye(r, device=S0.device, dtype=S0.dtype)
             eps = 1e-6 if S0.dtype == torch.float32 else 1e-12
+
             try:
-                # Cholesky on (lam I + S0)
-                L = torch.linalg.cholesky(S0 + hparams.L2 * Ir + eps * Ir)   # lower, r×r
-
-                # Solve (lam I + S0) B = Y^T  ->  B = (lam I + S0)^{-1} Y^T
-                YT = Y.T                                              # r×d
-                B  = torch.cholesky_solve(YT, L)                      # r×d
-
-                # Δ = resid @ B
-                upd_matrix = resid @ B
+                L = torch.linalg.cholesky(S0 + hparams.L2 * Ir + eps * Ir)  # lower
+                YT = Y.T                            # r × d
+                B = torch.cholesky_solve(YT, L)     # r × d
+                upd_matrix = resid @ B              # d × d
             except RuntimeError as e:
-                print(e) 
-                skipped_this_request=True
+                print(e)
+                skipped_this_request = True
                 print("Failed for cholesky. Skip this edit.")
                 break
         else:
             d = layer_ks.shape[0]
             Id = torch.eye(d, device="cuda", dtype=layer_ks.dtype)
             upd_matrix = torch.linalg.solve(
-                P[i,:,:].cuda() @ (layer_ks @ layer_ks.T) + hparams.L2 * Id,
-                P[i,:,:].cuda() @ layer_ks @ resid.T,
+                P[i, :, :].cuda() @ (layer_ks @ layer_ks.T) + hparams.L2 * Id,
+                P[i, :, :].cuda() @ layer_ks @ resid.T,
             )
-            
 
         solve_s = time.perf_counter() - t_solve0
         update_timing["total_solve_s"] += solve_s
-        t_proj0 = time.perf_counter()
-        #update projector
-        P[i,:,:], _ = update_projector_from_P_and_K(P[i,:,:], layer_ks.detach())
 
+        # Update projector
+        t_proj0 = time.perf_counter()
+        P[i, :, :], _ = update_projector_from_P_and_K(P[i, :, :], layer_ks.detach())
         proj_s = time.perf_counter() - t_proj0
         update_timing["total_proj_s"] += proj_s
 
         weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
         upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
-
         print("orig norm", torch.linalg.norm(weights[weight_name]))
         print("upd norm", torch.linalg.norm(upd_matrix))
         with torch.no_grad():
@@ -238,27 +271,71 @@ def apply_EvoEdit_to_model(
 
         layer_total_s = proj_s + solve_s
         total_s_all_layers += layer_total_s
-        update_timing["per_layer"].append({
-            "layer": int(layer),
-            "solve_s": solve_s,
-            "proj_update_s": proj_s,
-            "layer_total_s": layer_total_s
-        })
-        print(f"[Timing] layer {layer}: solve={solve_s:.4f}s, proj_update={proj_s:.4f}s, total={layer_total_s:.4f}s")
+        update_timing["per_layer"].append(
+            {
+                "layer": int(layer),
+                "z_error_s": z_error_s,
+                "solve_s": solve_s,
+                "proj_update_s": proj_s,
+                "layer_total_s": layer_total_s,
+            }
+        )
+        print(
+            f"[Timing] layer {layer}: z_error={z_error_s:.4f}s, "
+            f"solve={solve_s:.4f}s, proj_update={proj_s:.4f}s, "
+            f"total={layer_total_s:.4f}s"
+        )
 
+    # 写 CSV（这一轮所有层一起写一次）
+    csv_path = Path("deltaPKp_stats.csv")
+    file_exists = csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["step", "layer", "num_kv", "deltaPKp_norm"]
+        )
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(layer_stat)
 
+    # 只有没 skip 的时候才把本轮 keys 计入 future 的 previous keys
     if not skipped_this_request:
         for i, layer in enumerate(hparams.layers):
-            layer_ks = compute_ks(model, tok, requests, hparams, layer, context_templates).T
-            cache_c[i,:,:] += layer_ks.cpu() @ layer_ks.cpu().T
+            layer_ks = compute_ks(
+                model, tok, requests, hparams, layer, context_templates
+            ).T
+            layer_ks_cpu = layer_ks.detach().cpu()
+            cache_c[i, :, :] += layer_ks_cpu @ layer_ks_cpu.T
+
+            key = int(layer)
+            if key not in K_CACHE:
+                K_CACHE[key] = layer_ks_cpu
+            else:
+                K_CACHE[key] = torch.cat([K_CACHE[key], layer_ks_cpu], dim=1)
 
     update_timing["total_all_s"] += total_s_all_layers
-    print(f"[Timing][Totals] solve={update_timing['total_solve_s']:.4f}s, "
-          f"proj_update={update_timing['total_proj_s']:.4f}s, "
-          f"all={update_timing['total_all_s']:.4f}s")
+    print(
+        f"[Timing][Totals] z_error={update_timing['total_z_error_s']:.4f}s, "
+        f"solve={update_timing['total_solve_s']:.4f}s, "
+        f"proj_update={update_timing['total_proj_s']:.4f}s, "
+        f"all={update_timing['total_all_s']:.4f}s"
+    )
+
+    if log_gpu_memory:
+        torch.cuda.synchronize(memory_device)
+        peak_alloc_gib = (
+            torch.cuda.max_memory_allocated(memory_device) / (1024**3)
+        )
+        peak_reserved_gib = (
+            torch.cuda.max_memory_reserved(memory_device) / (1024**3)
+        )
+        print(
+            f"[Memory] peak_alloc={peak_alloc_gib:.2f} GiB, "
+            f"peak_reserved={peak_reserved_gib:.2f} GiB"
+        )
 
     print(f"Deltas successfully computed for {list(weights.keys())}")
     return model, cache_c
+
 
 def get_cov(
     model: AutoModelForCausalLM,

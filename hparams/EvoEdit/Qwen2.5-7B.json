@@ -26,6 +26,6 @@
   "mom2_dtype": "float32",
 
   "nullspace_threshold": 2e-2,
-  "L2": 1,
+  "L2": 2,
   "apply_woodbury":true
 }

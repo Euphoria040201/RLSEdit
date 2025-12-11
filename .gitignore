@@ -42,3 +42,6 @@ compute.py
 plot_singulars.py
 plot_upd_norms.py
 plot_layer_singulars.py
+papers/
+Mode-Connectivity-PLM/
+logs_for_evoedit/

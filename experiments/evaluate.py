@@ -33,6 +33,8 @@ from AlphaEdit import AlphaEditHyperParams
 from AlphaEdit.AlphaEdit_main import apply_AlphaEdit_to_model, get_cov
 from EvoEdit import EvoEditHyperParams
 from EvoEdit.EvoEdit_main import apply_EvoEdit_to_model, get_cov
+from RLSEdit import RLSEditHyperParams
+from RLSEdit.RLSEdit_main import apply_RLSEdit_to_model
 from rome import ROMEHyperParams, apply_rome_to_model
 from util import nethook
 from util.globals import *
@@ -42,6 +44,7 @@ from glue_eval.glue_eval import GLUEEval
 ALG_DICT = {
     "AlphaEdit": (AlphaEditHyperParams, apply_AlphaEdit_to_model),
     "EvoEdit": (EvoEditHyperParams, apply_EvoEdit_to_model),
+    "RLSEdit": (RLSEditHyperParams, apply_RLSEdit_to_model),
     "MEMIT_seq": (MEMITHyperParams, apply_memit_seq_to_model),
     "MEMIT_prune": (MEMITHyperParams, apply_memit_to_model),
     "MEMIT_rect": (MEMITHyperParams, apply_memit_rect_to_model),
@@ -58,6 +61,8 @@ DS_DICT = {
     "zsre": (MENDQADataset, compute_rewrite_quality_zsre),
     "mquake": (MQUAKEDataset, compute_rewrite_quality_mquake),
 }
+
+
 
 def main(
     alg_name: str,
@@ -105,7 +110,7 @@ def main(
     ckpt_root = run_dir / checkpoint_subdir
     ckpt_root.mkdir(parents=True, exist_ok=True)
 
-    if "MEMIT" in alg_name:
+    if "MEMIT" in alg_name: 
     # Get run hyperparameters
         params_path = (
             run_dir / "params.json"
@@ -147,7 +152,7 @@ def main(
     # Get cache templates
     cache_template = None
     if use_cache:
-        if any(alg in alg_name for alg in ["MEMIT","AlphaEdit", "EvoEdit", "MEMIT_seq", "MEMIT_prune", "MEMIT_rect"]):
+        if any(alg in alg_name for alg in ["MEMIT","AlphaEdit", "EvoEdit", "RLSEdit","MEMIT_seq", "MEMIT_prune", "MEMIT_rect"]):
             cache_template = (
                 KV_DIR
                 / f"{model_name.replace('/', '_')}_MEMIT"
@@ -217,14 +222,16 @@ def main(
         del W_out
     if alg_name == "AlphaEdit" or alg_name == "EvoEdit":
         for i, layer in enumerate(hparams.layers):
-            P[i,:,:] = get_project(model,tok,layer,hparams)
+            proj = get_project(model,tok,layer,hparams)
+            P[i,:,:] = proj
         torch.save(P, "null_space_project.pt")
+
 
     glue_save_location = str(run_dir) + '/' + 'glue_eval/'
     os.makedirs(glue_save_location, exist_ok=True)
     
     ## [ADDED] List to store records for the forgetting evaluation
-    #history_of_edits = []
+    history_of_edits = []
 
     cnt = 0
     for record_chunks in chunks(ds, num_edits):
@@ -240,12 +247,12 @@ def main(
                 break
         if already_finished:
             ## [ADDED] Also store the records in history even if skipping computation
-            #history_of_edits.extend(record_chunks)
+            history_of_edits.extend(record_chunks)
             cnt += 1
             continue
         
         ## [ADDED] Store the records for this chunk to test against later.
-        #history_of_edits.extend(record_chunks)
+        history_of_edits.extend(record_chunks)
 
         # Compute weight changes + record weights that changed
         case_ids = [record["case_id"] for record in record_chunks]
@@ -254,9 +261,14 @@ def main(
             if conserve_memory
             else dict()
         )
-        etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT", "EvoEdit", "AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]) else dict()
+        etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT", "EvoEdit", "RLSEdit","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]) else dict()
         seq_args = dict(cache_c=cache_c) if any(alg in alg_name for alg in ["AlphaEdit", "EvoEdit", "MEMIT_seq", "NSE"]) else dict()
-        nc_args = dict(P = P) if any(alg in alg_name for alg in ["AlphaEdit", "EvoEdit"]) else dict()
+        if alg_name == "AlphaEdit":
+            nc_args = dict(P=P)
+        elif alg_name == "EvoEdit":
+            nc_args = dict(P=P)
+        else:
+            nc_args = dict()
         if cnt == 0 and downstream_eval_steps > 0:#do initial GLUE EVAL WITH ORIGINAL MODEL
             glue_results = {'edit_num': -1}
 
@@ -270,25 +282,31 @@ def main(
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
         start = time()
-        if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE", "EvoEdit"]):
-            edited_model, cache_c = apply_algo(
-                model,
-                tok,
-                [
-                    {"case_id": record["case_id"], **rewrite_dict}
-                    for record in record_chunks
-                    for rewrite_dict in (
-                        record["requested_rewrite"]
-                        if isinstance(record["requested_rewrite"], list)
-                        else [record["requested_rewrite"]]
-                    )
-                ],
-                hparams,
-                **args_conserve_memory,
-                **etc_args,
-                **seq_args,
-                **nc_args,
-            )
+        if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE", "EvoEdit", "RLSEdit"]):
+            result = apply_algo(
+                    model,
+                    tok,
+                    [
+                        {"case_id": record["case_id"], **rewrite_dict}
+                        for record in record_chunks
+                        for rewrite_dict in (
+                            record["requested_rewrite"]
+                            if isinstance(record["requested_rewrite"], list)
+                            else [record["requested_rewrite"]]
+                        )
+                    ],
+                    hparams,
+                    **args_conserve_memory,
+                    **etc_args,
+                    **seq_args,
+                    **nc_args,
+                )
+            if alg_name == "AlphaEdit":
+                edited_model, cache_c = result
+            else:
+                edited_model, cache_c = result
+            if "cache_c" in seq_args:
+                seq_args["cache_c"] = cache_c
         elif alg_name == "MEMIT_prune":
             if cnt == 0:
                 edited_model, weights_copy = apply_algo(
@@ -400,7 +418,6 @@ def main(
                     print(f"[Checkpoint][WARN] save failed: {e}")
         # ----------------------------------------------------
 
-        '''
                 ## --- [ADDED] FORGETTING EVALUATION BLOCK (REVISED) ---
         total_edits = cnt * num_edits
         if forgetting_eval_interval > 0 and total_edits > 0 and total_edits % forgetting_eval_interval == 0:
@@ -462,8 +479,8 @@ def main(
                 print(f"Forgetting report saved to {report_path}")
             print("---------------------------------------------------------")
         ## --- END OF ADDED BLOCK ---
-        '''
 
+        '''
         # Evaluate new model
         if downstream_eval_steps > 0 and cnt % args.downstream_eval_steps == 0:
             glue_results = {
@@ -480,7 +497,8 @@ def main(
             output_filename = out_file.replace('.json', '_glue.json')
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
-    '''
+        '''
+
     start = time()
     gen_test_vars = [snips, vec]
     for record in ds:
@@ -510,7 +528,7 @@ def main(
             json.dump(metrics, f, indent=1)
 
     print("Evaluation took", time() - start)
-    '''
+
 def get_project(model, tok, layer, hparams):
     force_recompute = False
     cov = get_cov(
@@ -534,7 +552,8 @@ def get_project(model, tok, layer, hparams):
             f"count(<{threshold:g})={cnt}/{s.size}")
     small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
     print(len(small_singular_indices))
-    return U[:, small_singular_indices] @ U[:, small_singular_indices].T
+    proj = U[:, small_singular_indices] @ U[:, small_singular_indices].T
+    return proj
 
 def window(seq, n=2):
     "Returns a sliding window (of width n) over data from the iterable"
@@ -560,7 +579,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--alg_name",
-        choices=["AlphaEdit", "EvoEdit", "MEMIT_rect", "MEMIT_seq","MEMIT_prune", "MEMIT", "ROME", "FT", "MEND","NSE"],
+        choices=["AlphaEdit", "EvoEdit", "MEMIT_rect", "MEMIT_seq","MEMIT_prune", "MEMIT", "ROME", "FT", "MEND","NSE","RLSEdit"],
         default="ROME",
         help="Editing algorithm to use. Results are saved in results/<alg_name>/<run_id>, "
         "where a new run_id is generated on each run. "

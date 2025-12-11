@@ -72,6 +72,11 @@ def execute_memit(
     Invariant: model at beginning of function == model at end of function
     """
 
+    memory_device = next(model.parameters()).device
+    log_gpu_memory = memory_device.type == "cuda"
+    if log_gpu_memory:
+        torch.cuda.reset_peak_memory_stats(memory_device)
+
     deltas = {}
 
     # Update target and print info
@@ -226,6 +231,12 @@ def execute_memit(
     with torch.no_grad():
         for k, v in weights.items():
             v[...] = weights_copy[k]
+
+    if log_gpu_memory:
+        torch.cuda.synchronize(memory_device)
+        peak_alloc_gib = torch.cuda.max_memory_allocated(memory_device) / (1024 ** 3)
+        peak_reserved_gib = torch.cuda.max_memory_reserved(memory_device) / (1024 ** 3)
+        print(f"[Memory] peak_alloc={peak_alloc_gib:.2f} GiB, peak_reserved={peak_reserved_gib:.2f} GiB")
 
     print(f"Deltas successfully computed for {list(weights.keys())}")
 

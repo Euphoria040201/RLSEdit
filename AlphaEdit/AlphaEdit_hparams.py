@@ -36,3 +36,4 @@ class AlphaEditHyperParams(HyperParams):
     mom2_dtype: str
     nullspace_threshold: float
     L2: float
+    use_langedit: bool = True
