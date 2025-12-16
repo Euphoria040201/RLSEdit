@@ -46,9 +46,29 @@ results/
 #### 2. Summarize the results  
 To summarize the results, you can use [`experiments/summarize.py`](experiments/summarize.py):
 
-    python -m experiments.summarize --dir_name AlphaEdit --runs 069
+    python -m experiments.summarize --dir_name ROME --runs 002
 
 ## Acknowledgment
 Our code is based on  [``AlphaEdit``](https://github.com/jianghoucheng/AlphaEdit).
 
 nohup python compute.py --gpu 7 --mem-frac 0.85 --compute &
+
+
+cd /work/xinyu/Project/tools
+mkdir -p logs
+
+HF_DATASETS_CACHE=/work/xinyu/hf_cache/datasets_gsm8k_clean \
+CUDA_VISIBLE_DEVICES=5 nohup python eval_gsm8k_batch.py \
+  --models-dir /work/xinyu/Project/results/AlphaEdit/run_074/REASONING_Llama3-8B_mcf_AlphaEdit_ne100_ds10000_mu15000 \
+  --pattern "edits_*" \
+  --pre-model meta-llama/Meta-Llama-3-8B-Instruct \
+  --base-model meta-llama/Meta-Llama-3-8B-Instruct \
+  --device cuda \
+  --split test \
+  --shots 8 \
+  --cot \
+  --temperature 0.0 \
+  --max-new-tokens 256 \
+  --output-json logs/gsm8k_run074_AlphaEdit_all_edits_8shot_cot.json \
+  --write-per-model \
+  > logs/gsm8k_run074_AlphaEdi_all_edits_8shot_cot.out 2>&1 &

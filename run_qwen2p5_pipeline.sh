@@ -8,17 +8,23 @@ LOG_DIR="$ROOT/logs"
 dataset="mcf"
 RLSEDIT_MOM2_UPDATE_WEIGHT=15000
 # Optional: override lambda_reg (controls lam**2 term); leave empty to use hparams
-RLSEDIT_LAMBDA_REG=""
+RLSEDIT_LAMBDA_REG=0.9
 # 用绝对路径（你之前的权重在 /work/xinyu/models/...）
-MODEL_ID="/work/xinyu/models/Qwen2.5-7B-Instruct"
-HPARAMS_FNAME="Qwen2.5-7B.json"
-ALG_NAME="RLSEdit"
-MODEL_NAME="Qwen2.5-7B"
-DATASET_SIZE=15000
-CKPT_SUBDIR="${MODEL_NAME}_${dataset}_${ALG_NAME}_ne${NUM_EDITS}_ds${DATASET_SIZE}_mu${RLSEDIT_MOM2_UPDATE_WEIGHT}"
+MODEL_ID="/work/xinyu/models/Llama-2-7b-hf"
+HPARAMS_FNAME="Llama2-7B.json"
+ALG_NAME="EvoEdit"
+MODEL_NAME="Llama2-7B"
+DATASET_SIZE=10000
 # 原来是 {0,1,...} 会当普通字符串；改成 bash 数组
-GPU_IDS=(6 7)
-RUN_DIR="results/${ALG_NAME}/run_000"
+GPU_IDS=(0)
+RUN_DIR=""  # 留空则自动取 results/$ALG_NAME 下最新的 run_*
+
+
+
+CKPT_SUBDIR="${MODEL_NAME}_${dataset}_${ALG_NAME}_ne${NUM_EDITS}_ds${DATASET_SIZE}"
+if [[ "$ALG_NAME" == "RLSEdit" ]]; then
+  CKPT_SUBDIR+="_mu${RLSEDIT_MOM2_UPDATE_WEIGHT}"
+fi
 
 # RLSEdit-specific: scale for mom2_update_weight (override via env)
 
@@ -63,7 +69,7 @@ for GPU_ID in "${GPU_IDS[@]}"; do
     --dataset_size_limit "$DATASET_SIZE" \
     --num_edits "$NUM_EDITS" \
     --downstream_eval_steps 0 \
-    --save_every 0 \
+    --save_every 10000 \
     --checkpoint_subdir "$CKPT_SUBDIR" \
     > "$LOG" 2>&1 & echo $! | tee "$PIDF"
 
@@ -82,8 +88,12 @@ done
 echo "All evaluate jobs finished at: $(date)"
 
 echo "==[Stage 2 / eval_run_checkpoints]======================================="
-if [[ ! -d "$RUN_DIR" ]]; then
-  echo "ERROR: RUN_DIR does not exist: $RUN_DIR" >&2
+ALG_RESULTS_DIR="results/${ALG_NAME}"
+if [[ -z "$RUN_DIR" ]]; then
+  RUN_DIR="$(ls -d "${ALG_RESULTS_DIR}"/run_* 2>/dev/null | sort | tail -n1 || true)"
+fi
+if [[ -z "$RUN_DIR" || ! -d "$RUN_DIR" ]]; then
+  echo "ERROR: Cannot find run dir. Set RUN_DIR manually or check ${ALG_RESULTS_DIR}" >&2
   exit 4
 fi
 
@@ -95,12 +105,11 @@ echo "Run dir: $RUN_DIR"
 echo "Eval logs: $EVAL_LOG"
 echo "Eval PID file: $EVAL_PIDF"
 echo "Started at: $(date)"
-
 CUDA_VISIBLE_DEVICES=${GPU_FOR_STAGE2} nohup python3 -u -m experiments.eval_run_checkpoints \
   --run_dir "$RUN_DIR" \
   --ds_name "$dataset" \
-  --dataset_size_limit 2000 \
-  --generation_test_interval 5 \
+  --dataset_size_limit "$DATASET_SIZE" \
+  --generation_test_interval 0 \
   --trust_remote_code \
   --skip_existing \
   > "$EVAL_LOG" 2>&1 & echo $! | tee "$EVAL_PIDF"
@@ -115,7 +124,7 @@ echo "==[Stage 3 / post-processing]==========================================="
 echo "Plot forgetting curves..."
 python3 -u experiments/plot_forgetting.py \
   --run_dir "$RUN_DIR" \
-  --ds_name mcf
+  --ds_name "$dataset"
 
 echo "Summarize run..."
 python -m experiments.summarize --dir_name "$ALG_NAME" --runs "$(basename "$RUN_DIR")"

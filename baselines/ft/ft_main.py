@@ -8,7 +8,6 @@ from util import nethook
 
 from .ft_hparams import FTHyperParams
 
-
 def apply_ft_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -43,7 +42,6 @@ def apply_ft_to_model(
 
     return model, weights_copy
 
-
 def execute_ft(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -56,8 +54,25 @@ def execute_ft(
     Invariant: model at beginning of function == model at end of function
     """
 
+    # =========================
+    # NEW: seed + shuffle edits
+    # =========================
+    seed = kwargs.get("seed", None)
+    if seed is not None:
+        seed = int(seed)
+        # sets python random / numpy / torch / torch.cuda seeds
+        from transformers import set_seed
+        set_seed(seed)
+
     # Update target and print info
     requests = deepcopy(requests)
+
+    # NEW: shuffle edit order deterministically (so different seeds => different order)
+    if seed is not None:
+        import random
+        random.Random(seed).shuffle(requests)
+    # =========================
+
     for request in requests:
         if request["target_new"]["str"][0] != " ":
             # Space required for correct tokenization

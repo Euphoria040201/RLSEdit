@@ -35,7 +35,7 @@ nohup.out
 spectra/
 
 Logs_for_evoedit/
-RLSEdit/
+
 evoedit_results/
 
 compute.py
