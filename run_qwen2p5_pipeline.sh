@@ -6,24 +6,24 @@ NUM_EDITS=100
 ROOT="/work/xinyu/Project"
 LOG_DIR="$ROOT/logs"
 dataset="mcf"
-RLSEDIT_MOM2_UPDATE_WEIGHT=15000
+RLSEDIT_MOM2_UPDATE_WEIGHT=12000
 # Optional: override lambda_reg (controls lam**2 term); leave empty to use hparams
-RLSEDIT_LAMBDA_REG=0.9
+RLSEDIT_LAMBDA_REG=0
 # 用绝对路径（你之前的权重在 /work/xinyu/models/...）
-MODEL_ID="/work/xinyu/models/Llama-2-7b-hf"
-HPARAMS_FNAME="Llama2-7B.json"
-ALG_NAME="EvoEdit"
-MODEL_NAME="Llama2-7B"
-DATASET_SIZE=10000
+MODEL_ID="/work/xinyu/models/Meta-Llama-3-8B-Instruct"
+HPARAMS_FNAME="Llama3-8B.json"
+ALG_NAME="RLSEdit"
+MODEL_NAME="Llama3-8B"
+DATASET_SIZE=100
 # 原来是 {0,1,...} 会当普通字符串；改成 bash 数组
-GPU_IDS=(0)
+GPU_IDS=(0)   
 RUN_DIR=""  # 留空则自动取 results/$ALG_NAME 下最新的 run_*
 
 
 
 CKPT_SUBDIR="${MODEL_NAME}_${dataset}_${ALG_NAME}_ne${NUM_EDITS}_ds${DATASET_SIZE}"
 if [[ "$ALG_NAME" == "RLSEdit" ]]; then
-  CKPT_SUBDIR+="_mu${RLSEDIT_MOM2_UPDATE_WEIGHT}"
+  CKPT_SUBDIR+="_mu${RLSEDIT_MOM2_UPDATE_WEIGHT}_lam${RLSEDIT_LAMBDA_REG}"
 fi
 
 # RLSEdit-specific: scale for mom2_update_weight (override via env)
@@ -53,7 +53,7 @@ PIDS=()   # 收集所有后台进程 PID
 
 for GPU_ID in "${GPU_IDS[@]}"; do
   STAMP="$(date +%m%d_%H%M%S)"
-  LOG="${LOG_DIR}/${CKPT_SUBDIR}_${STAMP}_GPU${GPU_ID}.log"
+  LOG="${LOG_DIR}/${CKPT_SUBDIR}_${STAMP}_GPU${GPU_ID}_48.log"
   PIDF="${LOG}.pid"
 
   echo "Launching evaluate on GPU ${GPU_ID}"
@@ -68,8 +68,10 @@ for GPU_ID in "${GPU_IDS[@]}"; do
     --ds_name "$dataset" \
     --dataset_size_limit "$DATASET_SIZE" \
     --num_edits "$NUM_EDITS" \
-    --downstream_eval_steps 0 \
-    --save_every 10000 \
+    --downstream_eval_steps 200 \
+    --reasoning_eval_steps 200 \
+    --reasoning_eval_num_tests 100 \
+    --save_every 0 \
     --checkpoint_subdir "$CKPT_SUBDIR" \
     > "$LOG" 2>&1 & echo $! | tee "$PIDF"
 

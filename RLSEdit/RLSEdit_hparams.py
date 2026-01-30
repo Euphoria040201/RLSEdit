@@ -45,3 +45,4 @@ class RLSEditHyperParams(HyperParams):
     # 可选：每层的 K0（若不给则仅用 λ^2 I 初始化）
     # 形状: K0_by_layer[layer] ∈ R^{d_k × m0}
     K0_path_by_layer: Optional[Dict[int, str]] = None
+    solve_method: Literal["woodbury", "qr"] = "woodbury"

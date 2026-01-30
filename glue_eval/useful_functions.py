@@ -33,6 +33,20 @@ def load_data_split(filename, number_of_few_shots, number_of_tests):
     allow_few_shots, allow_tests = output[:FEW_SHOT_TEST_SPLIT], output[FEW_SHOT_TEST_SPLIT:]
     return allow_few_shots[:number_of_few_shots], allow_tests[:number_of_tests]
 
+def is_qwen_model(model) -> bool:
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or ""
+    return "qwen" in name.lower()
+
+
+def format_prompt_for_model(tokenizer, model, prompt: str, system_prompt: str | None = None) -> str:
+    if is_qwen_model(model) and getattr(tokenizer, "chat_template", None):
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return prompt
+
 MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP = {
     "meta-llama-3-8b-instruct": 8192,
     "llama3": 8192,

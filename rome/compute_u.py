@@ -43,7 +43,7 @@ def get_inv_cov(
             model,
             tok,
             layer_name,
-            hparams.stats_dir,
+            STATS_DIR,
             mom2_dataset,
             to_collect=["mom2"],
             sample_size=mom2_n_samples,

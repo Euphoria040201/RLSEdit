@@ -24,5 +24,6 @@
     "L2":4,
     "lambda_reg":0,
     "mu_reg": 1.0,
-    "weight_reg": 1
+    "weight_reg": 1,
+    "solve_method":"qr"
 }

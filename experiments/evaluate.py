@@ -41,6 +41,7 @@ from util.globals import *
 from nse import NSEHyperParams
 from nse.nse_main import apply_nse_to_model
 from glue_eval.glue_eval import GLUEEval
+from reasoning_eval.reasoning_eval import ReasoningEval
 ALG_DICT = {
     "AlphaEdit": (AlphaEditHyperParams, apply_AlphaEdit_to_model),
     "EvoEdit": (EvoEditHyperParams, apply_EvoEdit_to_model),
@@ -79,8 +80,12 @@ def main(
     use_cache: bool = False,
     forgetting_eval_interval: int = 0,
     save_every: int = 0,                 
-    checkpoint_subdir: str = "checkpoints", 
-    downstream_eval_steps: int = 0
+    checkpoint_subdir: str = "checkpoints",
+    downstream_eval_steps: int = 0,
+    reasoning_eval_steps: int = 0,
+    reasoning_eval_num_tests: int = 100,
+    reasoning_eval_gsm8k_shots: int = 8,
+    reasoning_eval_math_shots: int = 8,
 ):
 
     # Set algorithm-specific variables
@@ -229,6 +234,9 @@ def main(
 
     glue_save_location = str(run_dir) + '/' + 'glue_eval/'
     os.makedirs(glue_save_location, exist_ok=True)
+
+    reasoning_save_location = str(run_dir) + '/' + 'reasoning_eval/'
+    os.makedirs(reasoning_save_location, exist_ok=True)
     
     ## [ADDED] List to store records for the forgetting evaluation
     history_of_edits = []
@@ -281,6 +289,24 @@ def main(
             output_filename = out_file.replace('.json', '_glue.json')
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
+
+        if cnt == 0 and reasoning_eval_steps > 0:  # do initial reasoning eval with original model
+            reasoning_results = {'edit_num': -1}
+
+            out_file = reasoning_save_location + "base.json"
+
+            reasoning_eval = ReasoningEval(
+                model,
+                tok,
+                number_of_tests=reasoning_eval_num_tests,
+                gsm8k_shots=reasoning_eval_gsm8k_shots,
+                math_shots=reasoning_eval_math_shots,
+            )
+            reasoning_results = reasoning_eval.evaluate(reasoning_results, out_file, gsm8k_flag=True, math_flag=True)
+
+            output_filename = out_file.replace('.json', '_reasoning.json')
+            with open(output_filename, "w") as f:
+                json.dump(reasoning_results, f, indent=4)
         start = time()
         if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE", "EvoEdit", "RLSEdit"]):
             result = apply_algo(
@@ -480,7 +506,7 @@ def main(
             print("---------------------------------------------------------")
         ## --- END OF ADDED BLOCK ---
 
-        '''
+
         # Evaluate new model
         if downstream_eval_steps > 0 and cnt % args.downstream_eval_steps == 0:
             glue_results = {
@@ -497,7 +523,28 @@ def main(
             output_filename = out_file.replace('.json', '_glue.json')
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
-        '''
+
+        if reasoning_eval_steps > 0 and cnt % reasoning_eval_steps == 0:
+            reasoning_results = {
+                            'edit_num': cnt*num_edits,
+                            'case_id': case_ids
+                            }
+
+            out_file = reasoning_save_location + "case_{}.json".format(record["case_id"])
+
+            reasoning_eval = ReasoningEval(
+                model,
+                tok,
+                number_of_tests=reasoning_eval_num_tests,
+                gsm8k_shots=reasoning_eval_gsm8k_shots,
+                math_shots=reasoning_eval_math_shots,
+            )
+            reasoning_results = reasoning_eval.evaluate(reasoning_results, out_file, gsm8k_flag=True, math_flag=True)
+
+            output_filename = out_file.replace('.json', '_reasoning.json')
+            with open(output_filename, "w") as f:
+                json.dump(reasoning_results, f, indent=4)
+
 
     start = time()
     gen_test_vars = [snips, vec]
@@ -655,6 +702,30 @@ if __name__ == "__main__":
         default=0,
         help="If we want to do sequential editing or not",
     )
+    parser.add_argument(
+        "--reasoning_eval_steps",
+        type=int,
+        default=0,
+        help="Interval (in number of edits) to run GSM8K + MATH reasoning eval. 0 = disable.",
+    )
+    parser.add_argument(
+        "--reasoning_eval_num_tests",
+        type=int,
+        default=100,
+        help="Number of examples per reasoning eval (GSM8K/MATH).",
+    )
+    parser.add_argument(
+        "--reasoning_eval_gsm8k_shots",
+        type=int,
+        default=8,
+        help="Few-shot examples for GSM8K reasoning eval.",
+    )
+    parser.add_argument(
+        "--reasoning_eval_math_shots",
+        type=int,
+        default=8,
+        help="Few-shot examples for MATH reasoning eval.",
+    )
     ## [ADDED] New argument for the forgetting evaluation experiment
     parser.add_argument(
         "--forgetting_eval_interval",
@@ -694,4 +765,8 @@ if __name__ == "__main__":
         save_every=args.save_every,
         checkpoint_subdir=args.checkpoint_subdir,
         downstream_eval_steps=args.downstream_eval_steps,
+        reasoning_eval_steps=args.reasoning_eval_steps,
+        reasoning_eval_num_tests=args.reasoning_eval_num_tests,
+        reasoning_eval_gsm8k_shots=args.reasoning_eval_gsm8k_shots,
+        reasoning_eval_math_shots=args.reasoning_eval_math_shots,
     )
