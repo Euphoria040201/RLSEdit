@@ -17,11 +17,6 @@
 - nltk==3.9.1
 
 ## Quick Start
-source /work/xinyu/envs/ml261/bin/activate
-# 提示符出现 (ml261) 即成功
-conda deactivate
-conda activate /work/xinyu/envs/ml261/
-cd /work/xinyu/Project
 LOG_DIR="$PWD/logs"
 install -d "$LOG_DIR"
 STAMP="$(date +%m%d_%H%M%S)"
@@ -52,24 +47,4 @@ To summarize the results, you can use [`experiments/summarize.py`](experiments/s
 ## Acknowledgment
 Our code is based on  [``AlphaEdit``](https://github.com/jianghoucheng/AlphaEdit).
 
-nohup python compute.py --gpu 7 --mem-frac 0.85 --compute &
 
-
-cd /work/xinyu/Project/tools
-mkdir -p logs
-
-HF_DATASETS_CACHE=/work/xinyu/hf_cache/datasets_gsm8k_clean \
-CUDA_VISIBLE_DEVICES=7 nohup python eval_gsm8k_batch.py \
-  --models-dir /work/xinyu/Project/results/ROME/run_003/Llama3-8B_mcf_ROME_ne100_ds10000 \
-  --pattern "edits_*" \
-  --pre-model meta-llama/Meta-Llama-3-8B-Instruct \
-  --base-model meta-llama/Meta-Llama-3-8B-Instruct \
-  --device cuda \
-  --split test \
-  --shots 8 \
-  --cot \
-  --temperature 0.0 \
-  --max-new-tokens 256 \
-  --output-json logs/gsm8k_run003_ROME_all_edits_8shot_cot.json \
-  --write-per-model \
-  > logs/gsm8k_run003_ROME_all_edits_8shot_cot.out 2>&1 &
